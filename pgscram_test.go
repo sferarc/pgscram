@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/pbkdf2"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"strings"
 	"testing"
@@ -145,27 +146,55 @@ func TestDerivedKeysMatchRFC(t *testing.T) {
 func TestParseVerifierRejectsMalformed(t *testing.T) {
 	t.Parallel()
 
-	cases := map[string]string{
-		"empty":                 "",
-		"plaintext":             "plaintext",
-		"prefix only":           "SCRAM-SHA-256$",
-		"no key section":        "SCRAM-SHA-256$4096",
-		"salt not base64":       "SCRAM-SHA-256$4096:notbase64!$a:b",
-		"iterations not a int":  "SCRAM-SHA-256$abc:c2FsdA==$a:b",
-		"wrong mechanism":       "MD5$4096:c2FsdA==$a:b",
-		"zero iterations":       "SCRAM-SHA-256$0:c2FsdA==$YQ==:Yg==",
-		"negative iterations":   "SCRAM-SHA-256$-1:c2FsdA==$YQ==:Yg==",
-		"missing server key":    "SCRAM-SHA-256$4096:c2FsdA==$YQ==",
-		"stored key not base64": "SCRAM-SHA-256$4096:c2FsdA==$!!!:Yg==",
-		"server key not base64": "SCRAM-SHA-256$4096:c2FsdA==$YQ==:!!!",
+	key := base64.StdEncoding.EncodeToString(make([]byte, sha256.Size))
+	short := base64.StdEncoding.EncodeToString(make([]byte, sha256.Size-1))
+	long := base64.StdEncoding.EncodeToString(make([]byte, sha256.Size+1))
+
+	cases := map[string]struct {
+		in   string
+		want string
+	}{
+		"empty":                 {"", "missing mechanism prefix"},
+		"plaintext":             {"plaintext", "missing mechanism prefix"},
+		"prefix only":           {"SCRAM-SHA-256$", "missing key section"},
+		"no key section":        {"SCRAM-SHA-256$4096", "missing key section"},
+		"wrong mechanism":       {"MD5$4096:c2FsdA==$" + key + ":" + key, "missing mechanism prefix"},
+		"iterations not a int":  {"SCRAM-SHA-256$abc:c2FsdA==$" + key + ":" + key, "bad iteration count"},
+		"zero iterations":       {"SCRAM-SHA-256$0:c2FsdA==$" + key + ":" + key, "bad iteration count"},
+		"negative iterations":   {"SCRAM-SHA-256$-1:c2FsdA==$" + key + ":" + key, "bad iteration count"},
+		"salt not base64":       {"SCRAM-SHA-256$4096:notbase64!$" + key + ":" + key, "bad salt encoding"},
+		"empty salt":            {"SCRAM-SHA-256$4096:$" + key + ":" + key, "empty salt"},
+		"missing server key":    {"SCRAM-SHA-256$4096:c2FsdA==$" + key, "missing server key"},
+		"stored key not base64": {"SCRAM-SHA-256$4096:c2FsdA==$!!!:" + key, "bad stored key encoding"},
+		"server key not base64": {"SCRAM-SHA-256$4096:c2FsdA==$" + key + ":!!!", "bad server key encoding"},
+		"stored key short":      {"SCRAM-SHA-256$4096:c2FsdA==$" + short + ":" + key, "bad stored key length"},
+		"stored key long":       {"SCRAM-SHA-256$4096:c2FsdA==$" + long + ":" + key, "bad stored key length"},
+		"stored key empty":      {"SCRAM-SHA-256$4096:c2FsdA==$:" + key, "bad stored key length"},
+		"server key short":      {"SCRAM-SHA-256$4096:c2FsdA==$" + key + ":" + short, "bad server key length"},
+		"server key long":       {"SCRAM-SHA-256$4096:c2FsdA==$" + key + ":" + long, "bad server key length"},
+		"server key empty":      {"SCRAM-SHA-256$4096:c2FsdA==$" + key + ":", "bad server key length"},
+		"one byte keys":         {"SCRAM-SHA-256$4096:c2FsdA==$YQ==:Yg==", "bad stored key length"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := ParseVerifier(c); !errors.Is(err, ErrInvalidVerifier) {
-				t.Errorf("ParseVerifier(%q) err = %v, want ErrInvalidVerifier", c, err)
+			_, err := ParseVerifier(c.in)
+			if !errors.Is(err, ErrInvalidVerifier) {
+				t.Fatalf("ParseVerifier(%q) err = %v, want ErrInvalidVerifier", c.in, err)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("ParseVerifier(%q) err = %v, want it to mention %q", c.in, err, c.want)
 			}
 		})
+	}
+}
+
+func TestParseVerifierAcceptsWellFormedKeys(t *testing.T) {
+	t.Parallel()
+
+	key := base64.StdEncoding.EncodeToString(make([]byte, sha256.Size))
+	if _, err := ParseVerifier("SCRAM-SHA-256$4096:c2FsdA==$" + key + ":" + key); err != nil {
+		t.Errorf("ParseVerifier with 32-byte keys err = %v, want nil", err)
 	}
 }
 

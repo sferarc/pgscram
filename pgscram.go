@@ -129,7 +129,8 @@ func EncodeVerifier(v Verifier) string {
 
 // ParseVerifier parses a stored SCRAM-SHA-256 verifier string, the value found
 // in pg_authid.rolpassword. It returns ErrInvalidVerifier (wrapped) for any
-// malformed input so callers can fail closed.
+// malformed input so callers can fail closed, including an empty salt and a
+// StoredKey or ServerKey that is not 32 bytes, which PostgreSQL also rejects.
 func ParseVerifier(s string) (Verifier, error) {
 	const prefix = "SCRAM-SHA-256$"
 	rest, ok := strings.CutPrefix(s, prefix)
@@ -154,6 +155,9 @@ func ParseVerifier(s string) (Verifier, error) {
 	if err != nil {
 		return Verifier{}, fmt.Errorf("%w: bad salt encoding", ErrInvalidVerifier)
 	}
+	if len(salt) == 0 {
+		return Verifier{}, fmt.Errorf("%w: empty salt", ErrInvalidVerifier)
+	}
 
 	storedB64, serverB64, ok := strings.Cut(keys, ":")
 	if !ok {
@@ -166,6 +170,12 @@ func ParseVerifier(s string) (Verifier, error) {
 	serverKey, err := base64.StdEncoding.DecodeString(serverB64)
 	if err != nil {
 		return Verifier{}, fmt.Errorf("%w: bad server key encoding", ErrInvalidVerifier)
+	}
+	if len(storedKey) != sha256.Size {
+		return Verifier{}, fmt.Errorf("%w: bad stored key length", ErrInvalidVerifier)
+	}
+	if len(serverKey) != sha256.Size {
+		return Verifier{}, fmt.Errorf("%w: bad server key length", ErrInvalidVerifier)
 	}
 
 	return Verifier{
